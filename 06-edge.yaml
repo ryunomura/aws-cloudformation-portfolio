@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Edge stack
+
+#################################
+# Parameters
+#################################
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: Environment name (dev, staging, prod)
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Default: dev
+
+  AcmCertificateArn:
+    Type: String
+    Description: ACM Certificate ARN from us-east-1
+
+  WebAclArn:
+    Type: String
+    Description: WAF WebACL ARN from us-east-1
+    
+  DomainName:
+    Type: String
+    Description: Domain name for CloudFront
+
+  CloudFrontCustomHeaderValue:
+    Type: String
+    Description: Custom header value for CloudFront to ALB
+    NoEcho: true
+    
+  CloudFrontCustomHeaderName:
+    Type: String
+    Description: Custom header name for CloudFront to ALB
+    Default: X-Origin-Verify 
+    
+    
+#################################
+#　Resources
+#################################
+Resources:
+  #################################
+  # CloudFront Diatribution
+  #################################
+  CloudFront:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${EnvironmentName}-cloudfront"
+        Origins:
+          - Id: ALBOrigin
+            DomainName: 
+              Fn::ImportValue:
+                Fn::Sub: "${EnvironmentName}-AlbDnsName"
+            CustomOriginConfig:
+              HTTPPort: 80
+              OriginProtocolPolicy: http-only
+            OriginCustomHeaders:
+              - HeaderName: !Ref CloudFrontCustomHeaderName
+                HeaderValue: !Ref CloudFrontCustomHeaderValue
+
+        DefaultCacheBehavior:          
+          TargetOriginId: ALBOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+
+        Aliases:
+          - !Ref DomainName
+
+        ViewerCertificate:
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+
+        WebACLId: !Ref WebAclArn
+      Tags:
+        - Key: Name 
+          Value: !Sub "${EnvironmentName}-cloudfront"
+
+#################################
+# Outputs
+#################################   
+Outputs:
+  CloudFrontDomainName:
+    Description: CloudFront Distribution Domain Name
+    Value: !GetAtt CloudFront.DomainName

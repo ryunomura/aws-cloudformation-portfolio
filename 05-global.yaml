@@ -1,0 +1,139 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Global stack for ACM and WAF
+#################################                 　　　　　このスタックはus-east-1（バージニア）でデプロイする
+# Parameters
+#################################
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: Environment name (dev, staging, prod)
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Default: dev
+
+  DomainName:
+    Type: String
+    Description: The domain name for the ACM certificate
+    
+  AllowedIpAddressMine:
+    Type: String  
+    Description: IP address of your local machine
+    
+  AllowedIpAddress1:
+    Type: String
+    Description: One of the fixed IP addresses required by the assignment (removed for public release)
+    
+
+  AllowedIpAddress2:
+    Type: String
+    Description: One of the fixed IP addresses required by the assignment (removed for public release)
+    
+
+#################################
+# Resources
+#################################
+Resources:
+  #################################
+  # ACM Certificate
+  #################################
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-certificate"
+
+  #################################
+  # WAF
+  #################################  
+  AllowedIpSet:
+    Type: AWS::WAFv2::IPSet
+    Properties:
+      Name: !Sub ${EnvironmentName}-allowed-ip-set
+      Scope: CLOUDFRONT
+      IPAddressVersion: IPV4
+      Addresses:
+        - !Ref AllowedIpAddressMine
+        - !Ref AllowedIpAddress1
+        - !Ref AllowedIpAddress2
+
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-waf"
+
+  WebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub ${EnvironmentName}-web-acl
+      Scope: CLOUDFRONT
+      DefaultAction:
+        Block: {}
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: true
+        SampledRequestsEnabled: true
+        MetricName: !Sub ${EnvironmentName}-web-acl
+
+# プレリリース時のアクセス制御（暫定設計）：
+# 開発・検証段階では、特定のIPアドレスのみアクセス可能とするため、
+# IP許可ルールを最優先で評価する構成としている。
+# これにより、許可されたIPからのアクセスはWAFのマネージドルールによる検査を受けない。
+#
+# 本番環境では本ルールを削除、または優先度を下げることで、
+# すべてのトラフィックに対してWAFによる検査を適用する想定とする。
+
+      Rules:
+        - Name: Allowmyip
+          Priority: 0
+          Action: 
+            Allow: {}
+          Statement:
+            IPSetReferenceStatement:
+              Arn: !GetAtt AllowedIpSet.Arn
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            SampledRequestsEnabled: true
+            MetricName: Allowmyip
+
+        - Name: CommonRuleSet
+          Priority: 1
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              Name: AWSManagedRulesCommonRuleSet
+              VendorName: AWS
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            SampledRequestsEnabled: true
+            MetricName: CommonRuleSet
+
+        - Name: KnownBadInputs
+          Priority: 2
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+              VendorName: AWS
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            SampledRequestsEnabled: true
+            MetricName: KnownBadInputs
+      
+
+#################################
+# Outputs
+#################################       ここで出力された値をEdgeスタックで証明書として入力してあげる。
+Outputs:
+
+  CertificateArn:
+    Description: ACM Certificate ARN
+    Value: !Ref Certificate
+    
+  WebAclArn:
+    Description: WAF WebACL ARN
+    Value: !GetAtt WebACL.Arn  

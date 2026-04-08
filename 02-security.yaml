@@ -1,0 +1,194 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Security stack
+
+#################################
+# Parameter
+#################################
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: Environment name (dev, staging, prod)
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Default: dev
+
+#################################
+# Mappings
+#################################
+Mappings:
+  CloudFrontPrefixList:
+    ap-northeast-1:
+      PrefixListId: "pl-58a04531"
+    us-east-1:
+      PrefixListId: "pl-3b927c52"
+    ca-central-1:
+      PrefixListId: "pl-38a64351"
+    ap-southeast-1:
+      PrefixListId: "pl-31a34658"
+
+#################################
+# Resources
+#################################
+Resources:
+  #################################
+  # ALB Security Group
+  #################################
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ALB
+      VpcId:
+        Fn::ImportValue:
+          Fn::Sub: "${EnvironmentName}-VpcId"
+      SecurityGroupEgress: []               #デフォルト全開放を削除。AlbEgressToEc2 で必要なルールのみ追加。
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-alb-sg"
+
+  AlbIngressFromCloudFront:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref AlbSecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      SourcePrefixListId:
+        Fn::FindInMap:
+          - CloudFrontPrefixList
+          - !Ref "AWS::Region"
+          - PrefixListId
+
+  AlbEgressToEc2:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref AlbSecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      DestinationSecurityGroupId: !Ref Ec2SecurityGroup
+
+  #################################
+  # EC2 Security Group
+  #################################
+  Ec2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EC2 instances
+      VpcId:
+        Fn::ImportValue:
+          Fn::Sub: "${EnvironmentName}-VpcId"
+      SecurityGroupEgress: []                #デフォルト全開放を削除。Ec2EgressToDatabase と Ec2EgressToVpcEndpoint で必要なルールのみ追加。Ec2EgressToInternet80、Ec2EgressToInternet443 で必要なルールのみ追加。
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-ec2-sg"
+
+  Ec2IngressFromAlb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref Ec2SecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
+
+  Ec2EgressToDatabase:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref Ec2SecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
+
+  Ec2EgressToVpcEndpoint: #SSM Session Manager 閉域通信用
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref Ec2SecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      DestinationSecurityGroupId:
+        Fn::ImportValue:
+          Fn::Sub: "${EnvironmentName}-VpcEndpointSecurityGroupId"
+
+  Ec2EgressToInternet80: #Userdata実行時のNAT経由でパッケージ取得通信用
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref Ec2SecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      CidrIp: 0.0.0.0/0
+    
+  Ec2EgressToInternet443: #Userdata実行時のNAT経由でパッケージ取得通信用
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref Ec2SecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0   
+            
+  
+  #################################
+  # Database Security Group
+  #################################
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for DB
+      VpcId:
+        Fn::ImportValue:
+          Fn::Sub: "${EnvironmentName}-VpcId"
+      SecurityGroupEgress: []               #デフォルト全開放を削除。DatabaseSecurityGroup はアウトバウンドで通信しないため。　
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-db-sg"
+
+  DatabaseIngressFromEc2:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DatabaseSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref Ec2SecurityGroup
+
+
+  #################################
+  # VPC Endpoint Ingress
+  #################################    
+  VpcEndpointIngressFromEc2:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Fn::ImportValue:
+          Fn::Sub: "${EnvironmentName}-VpcEndpointSecurityGroupId"
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourceSecurityGroupId: !Ref Ec2SecurityGroup
+
+  #################################
+  # Output and Export
+  #################################
+Outputs:
+  AlbSecurityGroupId:
+    Description: ALB Security Group ID
+    Value: !Ref AlbSecurityGroup
+    Export:
+      Name: !Sub "${EnvironmentName}-AlbSecurityGroupId"
+
+  Ec2SecurityGroupId:
+    Description: EC2 Security Group ID
+    Value: !Ref Ec2SecurityGroup
+    Export:
+      Name: !Sub "${EnvironmentName}-Ec2SecurityGroupId"
+
+  DatabaseSecurityGroupId:
+    Description: Database Security Group ID
+    Value: !Ref DatabaseSecurityGroup
+    Export:
+      Name: !Sub "${EnvironmentName}-DatabaseSecurityGroupId"

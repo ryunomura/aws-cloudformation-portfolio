@@ -1,0 +1,379 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Network stack
+#################################
+# Parameter
+#################################
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: Environment name (dev, staging, prod)
+    AllowedValues: 
+      - dev
+      - staging
+      - prod
+    Default: dev
+
+#################################
+# Resource
+#################################
+Resources:
+  #################################
+  # VPC
+  #################################
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-3tier-vpc"
+
+  #################################
+  # Public Subnet
+  #################################
+  PublicSubnetAz1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-3tier-public-subnet-az1"
+
+  PublicSubnetAz2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-3tier-public-subnet-az2"
+
+  #################################
+  # Private Subnet Application
+  #################################
+  PrivateSubnetAppAz1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.0.11.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub  "${EnvironmentName}-3tier-private-subnet-app-az1"
+
+  PrivateSubnetAppAz2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.0.12.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-3tier-private-subnet-app-az2"
+
+  #################################
+  # Private Subnet Database
+  #################################
+  PrivateSubnetDbAz1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.0.21.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-3tier-private-subnet-db-az1"
+
+  PrivateSubnetDbAz2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.0.22.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-3tier-private-subnet-db-az2"
+  #################################
+  # Internet Gateway
+  #################################
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-3tier-igw"
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  #################################
+  # Public Route Table
+  #################################
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-3tier-public-rt"
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetAz1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetAz1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetAz2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetAz2
+      RouteTableId: !Ref PublicRouteTable
+
+  #################################
+  # NAT Gateway
+  #################################
+  NatEipAz1:
+    Type: AWS::EC2::EIP
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-3tier-nat-eip-az1"
+
+  NatEipAz2:
+    Type: AWS::EC2::EIP
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-3tier-nat-eip-az2"
+
+  NatGatewayAz1:
+    Type: AWS::EC2::NatGateway
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      AllocationId: !GetAtt NatEipAz1.AllocationId
+      SubnetId: !Ref PublicSubnetAz1
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-3tier-nat-gateway-az1"
+
+  NatGatewayAz2:
+    Type: AWS::EC2::NatGateway
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      AllocationId: !GetAtt NatEipAz2.AllocationId
+      SubnetId: !Ref PublicSubnetAz2
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-3tier-nat-gateway-az2"
+
+  #################################
+  # Private Route Table Application
+  #################################
+  PrivateRouteTableAppAz1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-3tier-private-route-table-app-az1"
+
+  PrivateRouteAppAz1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableAppAz1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayAz1
+
+  PrivateSubnetAppAz1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAppAz1
+      RouteTableId: !Ref PrivateRouteTableAppAz1
+
+  PrivateRouteTableAppAz2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-3tier-private-route-table-app-az2"
+
+  PrivateRouteAppAz2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableAppAz2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayAz2
+
+  PrivateSubnetAppAz2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetAppAz2
+      RouteTableId: !Ref PrivateRouteTableAppAz2
+
+  #################################
+  # Private Route Table Database
+  #################################
+  PrivateRouteTableDbAz1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-3tier-private-route-table-db-az1"
+
+  PrivateSubnetDbAz1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetDbAz1
+      RouteTableId: !Ref PrivateRouteTableDbAz1
+
+  PrivateRouteTableDbAz2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-3tier-private-route-table-db-az2"
+
+  PrivateSubnetDbAz2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetDbAz2
+      RouteTableId: !Ref PrivateRouteTableDbAz2 
+
+  #################################
+  # Vpc Endpoint Security Group　　           ※Session Manager 用 Interface VPC Endpoint を後続で追加する前提で、先に VPCE 用 SG を作成
+  ################################# 
+  VpcEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Interface VPC Endpoints (SSM)
+      VpcId : !Ref Vpc
+      SecurityGroupEgress: []                 #デフォルト全開放を削除。VpcEndpointSecurityGroup はアウトバウンドで通信しないため。
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-vpce-sg"
+
+  #################################
+  # Vpc Endpoints
+  #################################
+  SsmVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssm"
+      VpcId: !Ref Vpc
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetAppAz1
+        - !Ref PrivateSubnetAppAz2
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+
+  SsmMessagesVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssmmessages"
+      VpcId: !Ref Vpc
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetAppAz1
+        - !Ref PrivateSubnetAppAz2
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+
+  Ec2MessagesVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ec2messages"
+      VpcId: !Ref Vpc
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetAppAz1
+        - !Ref PrivateSubnetAppAz2
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup            
+
+  #################################
+  # Output and Export
+  #################################
+Outputs:
+#VPC ID  
+  VpcId:
+    Description: VPC ID
+    Value: !Ref Vpc
+    Export: 
+      Name: !Sub "${EnvironmentName}-VpcId"
+
+#web subents
+  PublicSubnetAz1Id:
+    Description: Public Subnet AZ1 ID
+    Value: !Ref PublicSubnetAz1
+    Export: 
+      Name: !Sub "${EnvironmentName}-PublicSubnetAz1Id"
+
+  PublicSubnetAz2Id:
+    Description: Public Subnet AZ2 ID
+    Value: !Ref PublicSubnetAz2
+    Export: 
+      Name: !Sub "${EnvironmentName}-PublicSubnetAz2Id"
+#app subnets
+  PrivateSubnetAppAz1Id:
+    Description: Private Subnet Application AZ1 ID
+    Value: !Ref PrivateSubnetAppAz1
+    Export: 
+      Name: !Sub "${EnvironmentName}-PrivateSubnetAppAz1Id"
+
+  PrivateSubnetAppAz2Id:
+    Description: Private Subnet Application AZ2 ID
+    Value: !Ref PrivateSubnetAppAz2
+    Export: 
+      Name: !Sub "${EnvironmentName}-PrivateSubnetAppAz2Id"
+#DB private subnets
+  PrivateSubnetDbAz1Id:
+    Description: Private Subnet Database AZ1 ID
+    Value: !Ref PrivateSubnetDbAz1
+    Export: 
+      Name: !Sub "${EnvironmentName}-PrivateSubnetDbAz1Id"
+
+  PrivateSubnetDbAz2Id:
+    Description: Private Subnet Database AZ2 ID
+    Value: !Ref PrivateSubnetDbAz2
+    Export: 
+      Name: !Sub "${EnvironmentName}-PrivateSubnetDbAz2Id"
+      
+#VPC Endpoints SG
+  VpcEndpointSecurityGroupId:
+    Description: VPC Endpoint Security Group ID
+    Value: !Ref VpcEndpointSecurityGroup
+    Export:
+      Name: !Sub "${EnvironmentName}-VpcEndpointSecurityGroupId"

@@ -1,0 +1,133 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Database stack
+
+#################################
+# Parameter
+#################################
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: Environment name (dev, staging, prod)
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Default: dev
+        
+  DbMasterUserName:
+    Type: String
+    Description: Master UUser for Aurora Serverless v2
+    NoEcho: true
+
+  DbMasterPassword:
+    Type: String
+    Description: Master Password for Aurora Serverless v2
+    NoEcho: true
+
+  DbMinimumCapacity:
+    Type: Number
+    Description: Minimu ACU capacity for Aurora Serverless v2
+    Default: 0.5
+    AllowedValues:
+      - 0.5
+      - 1
+      - 2
+      - 4
+      - 8
+
+  DbMaximumcapacity:
+    Type: Number
+    Description: Maximum ACU capacity for Aurora Serverless v2
+    Default: 2
+    AllowedValues:
+      - 2
+      - 4
+      - 8
+      - 16
+      - 32
+
+#################################
+# Resources
+#################################
+Resources:
+  #################################
+  # DB Subnet Group
+  ################################# 
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Db subnet group for Aurora Serverless v2
+      SubnetIds:
+        - Fn::ImportValue:
+            Fn::Sub: "${EnvironmentName}-PrivateSubnetDbAz1Id"
+        - Fn::ImportValue:
+            Fn::Sub: "${EnvironmentName}-PrivateSubnetDbAz2Id"
+
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-db-subnet-group"      
+
+
+  #################################
+  # Aurora Serverless v2 Cluster
+  ################################# 
+  RDSDBCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VpcSecurityGroupIds:
+        - Fn::ImportValue:
+            Fn::Sub: "${EnvironmentName}-DatabaseSecurityGroupId"
+
+      Engine: aurora-postgresql
+      EngineVersion: 16.6
+
+      DBClusterIdentifier: !Sub "${EnvironmentName}-aurora-cluster"
+
+      MasterUsername: !Ref DbMasterUserName
+      MasterUserPassword: !Ref DbMasterPassword
+
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: !Ref DbMinimumCapacity
+        MaxCapacity: !Ref DbMaximumcapacity
+        
+      StorageEncrypted: true
+      BackupRetentionPeriod: 7
+      DeletionProtection: true
+
+  #################################
+  # Aurora Serverless v2 Instances
+  #################################
+  RdsDbInstance1:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref RDSDBCluster
+      Engine: aurora-postgresql
+      DBInstanceClass: db.serverless
+      DBInstanceIdentifier: !Sub "${EnvironmentName}-aurora-instance-1"
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-aurora-instance-1"
+
+  RdsDbInstance2:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref RDSDBCluster
+      Engine: aurora-postgresql
+      DBInstanceClass: db.serverless
+      DBInstanceIdentifier: !Sub "${EnvironmentName}-aurora-instance-2"
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-aurora-instance-2"
+
+#################################
+# Outputs
+#################################
+Outputs:
+  DBClusterEndpoint:
+    Description: Aurora Cluster Endpoint
+    Value: !GetAtt RDSDBCluster.Endpoint.Address
+
+
+      
+  

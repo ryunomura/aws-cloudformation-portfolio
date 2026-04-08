@@ -1,0 +1,265 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Compute stack
+
+#################################
+# Parameter
+#################################
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: Environment name (dev, staging, prod)
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Default: dev
+
+  InstanceType:
+    Type: String
+    Description: EC2 instance type for application servers
+    Default: m7a.large
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Description: Latest Ubuntu 24.04 LTS AMI ID from SSM public parameter
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+    
+  CloudFrontCustomHeaderName:
+    Type: String
+    Description: Custom header name for CloudFront to ALB
+    Default: X-Origin-Verify
+
+  CloudFrontCustomHeaderValue:
+    Type: String
+    Description: Custom header value for cloudfront to access ALB
+    NoEcho: true  
+
+#################################
+# Resources
+#################################
+Resources:
+  #################################
+  # IAM Role
+  #################################
+  Ec2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${EnvironmentName}-ec2-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-ec2-role"
+
+  #################################
+  # Instance Profile
+  #################################
+  Ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${EnvironmentName}-ec2-instance-profile"
+      Roles:
+        - !Ref Ec2Role
+
+  #################################
+  # Launch Template
+  #################################
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${EnvironmentName}-launch-template"
+
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmiId
+        InstanceType: !Ref InstanceType
+
+        IamInstanceProfile:
+          Name: !Ref Ec2InstanceProfile
+
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              Fn::Sub: "${EnvironmentName}-Ec2SecurityGroupId"
+
+        MetadataOptions:
+          HttpTokens: required
+          HttpEndpoint: enabled
+
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs:
+              VolumeType: gp3
+              VolumeSize: 8
+              DeleteOnTermination: true
+              Encrypted: true
+
+        Monitoring:
+          Enabled: true      
+
+        UserData:
+          Fn::Base64: |
+            #!/bin/bash
+            set -eux
+            apt-get update -y
+            apt-get install -y nginx
+            systemctl enable nginx
+            systemctl start nginx
+
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub "${EnvironmentName}-app-server"
+
+  #################################
+  # ALB
+  #################################
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${EnvironmentName}-alb"
+      Scheme: internet-facing
+      Type: application
+      IpAddressType: ipv4
+      Subnets:
+        - Fn::ImportValue:
+            Fn::Sub: "${EnvironmentName}-PublicSubnetAz1Id"
+        - Fn::ImportValue:
+            Fn::Sub: "${EnvironmentName}-PublicSubnetAz2Id"
+      SecurityGroups:
+        - Fn::ImportValue:
+            Fn::Sub: "${EnvironmentName}-AlbSecurityGroupId"
+
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-alb"
+
+  #################################
+  # Target Group
+  #################################
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${EnvironmentName}-tg"
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      VpcId:
+        Fn::ImportValue:
+          Fn::Sub: "${EnvironmentName}-VpcId"
+
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: traffic-port
+      HealthCheckPath: /
+      Matcher:
+        HttpCode: 200
+
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-tg"
+
+  #################################
+  # Listener
+  #################################
+  AlbListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: 403
+            ContentType: text/plain
+            MessageBody: "Forbidden"
+
+  AlbHeaderRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref AlbListener
+      Priority: 1
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: !Ref CloudFrontCustomHeaderName
+            Values:
+              - !Ref CloudFrontCustomHeaderValue
+      Actions: 
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  #################################
+  # Auto Scaling Group
+  #################################
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub "${EnvironmentName}-asg"
+      MinSize: 2
+      MaxSize: 6
+      DesiredCapacity: 2
+      VPCZoneIdentifier:
+        - Fn::ImportValue:
+            Fn::Sub: "${EnvironmentName}-PrivateSubnetAppAz1Id"
+        - Fn::ImportValue:
+            Fn::Sub: "${EnvironmentName}-PrivateSubnetAppAz2Id"
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      TargetGroupARNs:
+        - !Ref TargetGroup
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+          PropagateAtLaunch: true  
+
+  #################################
+  # Scaling Policy
+  #################################
+  CpuTargetScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      EstimatedInstanceWarmup: 300
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 50.0  
+
+  AlbRequestCountScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    DependsOn: AlbListener
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      EstimatedInstanceWarmup: 300
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ALBRequestCountPerTarget
+          ResourceLabel: !Join 
+            - /
+            - - !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+              - !GetAtt TargetGroup.TargetGroupFullName
+        TargetValue: 1000.0      
+          
+  #################################
+  # Output and Export
+  #################################
+Outputs: 
+  AlbDnsName:
+    Description: DNS name of the Application Load Balancer
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: !Sub "${EnvironmentName}-AlbDnsName"
+          
